@@ -303,7 +303,8 @@ def _present_node(hop: Hop) -> str:
     return host or hop.ip or "(未知节点)"
 
 
-def _humanize_delay(seconds: float) -> str:
+def humanize_delay(seconds: float) -> str:
+    """把秒数格式化为人类可读耗时（支持负值与毫秒）。"""
     if seconds < 0:
         return f"{seconds:.0f} 秒"
     if seconds < 1:
@@ -403,7 +404,7 @@ def analyze_headers(text: str) -> dict:
         "error_count": error_count,
         "warn_count": warn_count,
         "total_span_seconds": total_span,
-        "total_span_human": _humanize_delay(total_span) if total_span is not None else None,
+        "total_span_human": humanize_delay(total_span) if total_span is not None else None,
         "summary": summary,
         "path": [_hop_to_dict(hop, node_labels[i], i, len(path)) for i, hop in enumerate(path)],
     }
@@ -431,7 +432,7 @@ def _hop_to_dict(hop: Hop, label: str, path_index: int, total: int) -> dict:
         "naive_assumed_utc": hop.naive_assumed_utc,
         "anomalies": [{"level": a.level, "message": a.message} for a in hop.anomalies],
         "delay_seconds": hop.delay_seconds,
-        "delay_human": _humanize_delay(hop.delay_seconds) if hop.delay_seconds is not None else None,
+        "delay_human": humanize_delay(hop.delay_seconds) if hop.delay_seconds is not None else None,
         "delay_from": hop.delay_from,
         "raw": hop.raw,
     }

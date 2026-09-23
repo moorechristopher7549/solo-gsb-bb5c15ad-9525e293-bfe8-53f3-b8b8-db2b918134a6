@@ -129,6 +129,60 @@
   }
   .legend { color: var(--muted); font-size: 12.5px; margin-top: 28px; }
   code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
+
+  /* ---- 双邮件头对照 ---- */
+  .section-title { font-size: 20px; margin: 40px 0 6px; }
+  .compare-grid {
+    display: grid; gap: 14px;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  }
+  .compare-grid label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  .compare-grid textarea { min-height: 200px; }
+  .cmp { margin-top: 8px; }
+  .cmp-row {
+    display: grid; gap: 12px; align-items: stretch;
+    grid-template-columns: minmax(0, 1fr) 132px minmax(0, 1fr);
+    margin-bottom: 12px;
+  }
+  .cmp-head {
+    color: var(--muted); font-size: 12.5px; font-weight: 600;
+    text-align: center; padding: 0 6px;
+  }
+  .cmp-cell {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 10px 14px; font-size: 13px;
+    min-width: 0;
+  }
+  .cmp-cell.empty {
+    display: flex; align-items: center; justify-content: center;
+    color: var(--muted); border-style: dashed; background: transparent;
+  }
+  .cmp-row.kind-added .cmp-cell.side-b { border-color: var(--accent); }
+  .cmp-row.kind-missing .cmp-cell.side-a { border-color: var(--warn); }
+  .cmp-row.kind-common .cmp-cell { border-color: #2f4f43; }
+  .cmp-mid {
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 6px; text-align: center;
+    font-size: 12.5px;
+  }
+  .badge {
+    display: inline-block; border-radius: 999px; padding: 2px 12px;
+    font-size: 12px; font-weight: 700;
+  }
+  .badge.common { background: #12362b; color: var(--ok); border: 1px solid #166534; }
+  .badge.added { background: #0c2d3f; color: var(--accent); border: 1px solid #0369a1; }
+  .badge.missing { background: #3a2f10; color: var(--warn); border: 1px solid #a16207; }
+  .diff { font-weight: 700; font-size: 13px; }
+  .diff.na { color: var(--muted); font-weight: 600; }
+  .cmp-node { font-weight: 700; font-size: 14px; word-break: break-all; }
+  .cmp-cell .kv { margin-top: 4px; }
+  .cmp-cell .k { color: var(--muted); margin-right: 6px; }
+  .badtxt { color: var(--error); }
+  @media (max-width: 720px) {
+    .cmp-row { grid-template-columns: 1fr; }
+    .cmp-head { display: none; }
+    .cmp-mid { order: -1; }
+  }
 </style>
 </head>
 <body>
@@ -228,9 +282,112 @@
     {% endif %}
   {% endif %}
 
+  <h2 class="section-title">🔀 双邮件头路径对照</h2>
+  <p class="subtitle">
+    分别粘贴两份邮件头部（如同一封邮件的两次投递），按 <code>by</code> 主机 + 对端 IP 识别同一节点，
+    以保序全局对齐并列展示<strong>共有 / 新增（仅 B）/ 缺失（仅 A）</strong>节点，并对共有节点比较两侧的相邻耗时。
+  </p>
+
+  <form method="post" action="/compare">
+    <div class="compare-grid">
+      <div>
+        <label for="headers_a">头部 A（基准）</label>
+        <textarea name="headers_a" id="headers_a"
+          placeholder="第一份邮件原始头部">{{ headers_a or '' }}</textarea>
+      </div>
+      <div>
+        <label for="headers_b">头部 B（对照）</label>
+        <textarea name="headers_b" id="headers_b"
+          placeholder="第二份邮件原始头部">{{ headers_b or '' }}</textarea>
+      </div>
+    </div>
+    <div class="toolbar">
+      <button class="btn-primary" type="submit">对照投递路径</button>
+      <button class="btn-ghost" type="button" id="fillCompareSample">填入对照示例</button>
+      <button class="btn-ghost" type="button" id="clearCompare">清空</button>
+    </div>
+  </form>
+
+  {% if compare %}
+    {% if compare.error %}
+      <div class="banner">{{ compare.error }}</div>
+    {% else %}
+      <div class="stats">
+        <div class="stat"><div class="num ok">{{ compare.counts.common }}</div><div class="label">共有节点</div></div>
+        <div class="stat"><div class="num" style="color:var(--accent)">{{ compare.counts.added }}</div><div class="label">新增（仅头部 B）</div></div>
+        <div class="stat"><div class="num warn">{{ compare.counts.missing }}</div><div class="label">缺失（仅头部 A）</div></div>
+        <div class="stat"><div class="num">{{ compare.counts.a_total }}</div><div class="label">头部 A 节点数</div></div>
+        <div class="stat"><div class="num">{{ compare.counts.b_total }}</div><div class="label">头部 B 节点数</div></div>
+      </div>
+
+      {% macro hopcell(hop) %}
+        <div class="cmp-node">{{ hop.node }}</div>
+        <div class="hint">本侧路径 #{{ hop.path_index }}</div>
+        <div class="kv"><span class="k">时间（UTC）</span>
+          {% if hop.time_utc %}{{ hop.time_utc }}{% else %}<span class="badtxt">无效 / 缺失</span>{% endif %}
+        </div>
+        <div class="kv"><span class="k">相邻耗时</span>
+          {% if hop.path_index == 1 %}<span class="hint">首跳：无上游耗时</span>
+          {% elif hop.delay_human %}{{ hop.delay_human }}
+          {% else %}<span class="badtxt">不可计算</span>{% endif %}
+        </div>
+        <div class="kv hint">
+          from {{ hop.from_host or '?' }} → by {{ hop.by_host or '?' }}
+          {% if hop.ip %} · IP {{ hop.ip }}{% endif %}
+        </div>
+        {% if not hop.by_host and not hop.ip %}
+        <div class="kv hint">（缺少 by 主机与对端 IP，无身份，不参与匹配）</div>
+        {% endif %}
+        {% if hop.anomalies %}
+        <ul class="anomalies">
+          {% for a in hop.anomalies %}
+          <li class="{{ a.level }}">{{ '⛔' if a.level == 'error' else '⚠️' }} {{ a.message }}</li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+      {% endmacro %}
+
+      <div class="cmp">
+        <div class="cmp-row">
+          <div class="cmp-head">头部 A（基准）</div>
+          <div class="cmp-head">对照</div>
+          <div class="cmp-head">头部 B（对照）</div>
+        </div>
+        {% for row in compare.rows %}
+        <div class="cmp-row kind-{{ row.kind }}">
+          <div class="cmp-cell side-a{% if not row.a %} empty{% endif %}">
+            {% if row.a %}{{ hopcell(row.a) }}{% else %}—（头部 A 无此节点）{% endif %}
+          </div>
+          <div class="cmp-mid">
+            {% if row.kind == 'common' %}
+              <span class="badge common">共有</span>
+              {% if row.delay.comparable %}
+                <span class="diff">耗时差 {{ row.delay.diff_human }}</span>
+                <span class="hint">A {{ row.delay.a_human }} / B {{ row.delay.b_human }}</span>
+              {% else %}
+                <span class="diff na">耗时不可比较</span>
+                <span class="hint">任一侧相邻耗时无效时不拼接、不比较</span>
+              {% endif %}
+            {% elif row.kind == 'added' %}
+              <span class="badge added">新增 · 仅 B</span>
+            {% else %}
+              <span class="badge missing">缺失 · 仅 A</span>
+            {% endif %}
+          </div>
+          <div class="cmp-cell side-b{% if not row.b %} empty{% endif %}">
+            {% if row.b %}{{ hopcell(row.b) }}{% else %}—（头部 B 无此节点）{% endif %}
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    {% endif %}
+  {% endif %}
+
   <p class="legend">
     排序依据：<code>Received</code> 字段由最终接收服务器在顶部追加，因此解析时按其嵌套结构反转，
-    得到真实投递顺序；当某节点时间戳早于其上游时会标记时钟偏移告警。所有时间统一换算为 UTC 展示。
+    得到真实投递顺序；当某节点时间戳早于其上游时会标记时钟偏移告警。所有时间统一换算为 UTC 展示。<br>
+    对照规则：节点身份 = <code>by</code> 主机 + 对端 IP，两者都缺失的节点不参与匹配（不会仅凭时间相近配对）；
+    同名节点重复出现时按保序全局对齐配对；耗时差仅取各自相邻两跳之差，任一侧无效即不可比较。
   </p>
 </div>
 
@@ -242,6 +399,17 @@
   document.getElementById('clearInput').addEventListener('click', () => {
     ta.value = '';
     ta.focus();
+  });
+  const taA = document.getElementById('headers_a');
+  const taB = document.getElementById('headers_b');
+  document.getElementById('fillCompareSample').addEventListener('click', () => {
+    taA.value = {{ sample | tojson }};
+    taB.value = {{ sample_b | tojson }};
+  });
+  document.getElementById('clearCompare').addEventListener('click', () => {
+    taA.value = '';
+    taB.value = '';
+    taA.focus();
   });
 </script>
 </body>

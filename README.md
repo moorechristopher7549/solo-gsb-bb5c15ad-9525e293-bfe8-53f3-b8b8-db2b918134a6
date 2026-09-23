@@ -9,7 +9,10 @@
 - **无法解析的时间标记为异常，但保留原始字段**（可展开查看）；
 - **缺少时间的节点仍然列出**，不会被丢弃；
 - 识别时钟偏移/时间倒灌（上一节点时间晚于本节点）并告警；
-- 提取 `from` / `by` / `via` / `with` / `id` 与对端 IPv4/IPv6 地址。
+- 提取 `from` / `by` / `via` / `with` / `id` 与对端 IPv4/IPv6 地址；
+- **双邮件头路径对照**：分别粘贴两份头部，按 `by` 主机 + 对端 IP 识别同一节点，
+  以保序全局对齐并列展示**共有 / 新增（仅 B）/ 缺失（仅 A）**节点，
+  并比较共有节点两侧的相邻耗时（任一侧时间无效则不可比较，不拼接耗时）。
 
 解析核心（`mailtrace/`）仅依赖 Python 标准库，可脱离 Flask 单独使用或被其他程序导入。
 
@@ -56,7 +59,45 @@ docker build -t mailtrace . && docker run --rm -p 8000:8000 mailtrace
 页面以时间线形式展示每个中继节点：节点名称、UTC 时间、from/by/协议、对端 IP、
 距上一节点耗时、异常/告警，以及可展开的**原始 `Received` 文本（保留折行）**。
 
-也提供 JSON 接口，便于脚本调用：
+### 双邮件头路径对照
+
+在首页下方的「双邮件头路径对照」区域，把两份邮件原始头部分别粘贴到
+**头部 A（基准）** 与 **头部 B（对照）**，点击 **对照投递路径**（可点“填入对照示例”体验）。
+页面按结构顺序对齐两侧中继节点，并列展示：
+
+- **共有**：两侧身份相同的节点，展示各自的相邻耗时与差值（如 `+5 秒` 表示 A 侧更慢）；
+- **新增（仅 B）**：只出现在头部 B 的节点；
+- **缺失（仅 A）**：只出现在头部 A 的节点。
+
+对照规则：
+
+- 节点身份 = `by` 主机名（忽略大小写与末尾点号）+ 对端 IP，二者共同决定“同一跳”；
+- `by` 主机与对端 IP **都缺失**的节点没有身份，不参与匹配——不会仅凭时间相近被当作同一跳；
+- 同名节点重复出现时，使用**保序全局对齐**（LCS 动态规划，最大化匹配对数且保持结构顺序），
+  而非“首次命中”式的贪心配对；
+- 共有节点的耗时取各自单份分析中的**相邻两跳耗时之差**；任一侧时间无效即显示
+  **不可比较**，不会跳过中间无时间的节点拼接耗时。
+
+也提供 JSON 对照接口：
+
+```bash
+curl -s -X POST http://localhost:8000/api/compare \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "headers_a": "Received: by mx.example; Tue, 23 Sep 2026 10:00:00 +0800",
+        "headers_b": "Received: by mx.example; Tue, 23 Sep 2026 10:00:05 +0800"
+      }'
+```
+
+返回的 `rows` 数组按结构顺序给出每一行对照（`kind` 为 `common` / `added` / `missing`），
+共有行内含 `delay`（两侧相邻耗时与 `diff_seconds` 差值，`comparable=false` 表示不可比较）。
+任一侧没有 `Received` 字段时返回 HTTP 400 与明确错误，例如：
+
+```json
+{"error": "头部 B 中未找到任何 Received 字段，无法进行路径对照", "side": "b", "counts": {...}, "rows": []}
+```
+
+单份头部分析也提供 JSON 接口，便于脚本调用：
 
 ```bash
 curl -s -X POST http://localhost:8000/api/analyze \
@@ -139,13 +180,16 @@ python -m unittest discover -s tests -v
 ├── mailtrace/              # 纯标准库解析核心（可独立复用）
 │   └── parsing/
 │       ├── parser.py       # 折行展开、时间解析、路径排序、耗时与异常
-│       └── sample.py       # 页面“填入示例”数据
+│       ├── compare.py      # 双头部：身份键 + 保序全局对齐 + 相邻耗时差值
+│       └── sample.py       # 页面“填入示例”数据（单份与对照各一份）
 ├── wsgi.py                 # gunicorn / flask 启动入口
 ├── entrypoint.sh           # 容器启动时安装依赖并启动 gunicorn
 ├── Dockerfile
 ├── docker-compose.yml
 ├── requirements.txt
-└── tests/test_parser.py    # 解析核心单元测试
+└── tests/
+    ├── test_parser.py      # 解析核心单元测试
+    └── test_compare.py     # 双头部对照单元测试
 ```
 
 ## 安全与隐私
