@@ -29,8 +29,12 @@
   .wrap { max-width: 1080px; margin: 0 auto; padding: 24px 20px 64px; }
   h1 { font-size: 24px; margin: 0 0 4px; }
   .subtitle { color: var(--muted); margin: 0 0 20px; font-size: 14px; }
+  .input-label {
+    display: block; font-size: 13px; font-weight: 600;
+    color: var(--muted); margin: 14px 0 6px;
+  }
   textarea {
-    width: 100%; min-height: 240px; resize: vertical;
+    width: 100%; min-height: 180px; resize: vertical;
     background: var(--panel); color: var(--text);
     border: 1px solid var(--line); border-radius: 10px;
     padding: 12px 14px; font: 12.5px/1.6 ui-monospace, SFMono-Regular,
@@ -43,6 +47,7 @@
     font-size: 14px; cursor: pointer; font-weight: 600;
   }
   .btn-primary { background: var(--accent); color: #082f49; }
+  .btn-compare { background: var(--ok); color: #052e1b; }
   .btn-ghost { background: var(--panel-2); color: var(--text); }
   button:hover { filter: brightness(1.1); }
   .stats {
@@ -129,6 +134,39 @@
   }
   .legend { color: var(--muted); font-size: 12.5px; margin-top: 28px; }
   code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
+
+  /* 双邮件头对照 */
+  .cmp-wrap { overflow-x: auto; }
+  table.cmp {
+    width: 100%; border-collapse: collapse; font-size: 13px;
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; overflow: hidden;
+  }
+  table.cmp th, table.cmp td {
+    padding: 9px 12px; text-align: left; vertical-align: top;
+    border-bottom: 1px solid var(--line);
+  }
+  table.cmp thead th {
+    background: var(--panel-2); color: var(--muted);
+    font-size: 12.5px; white-space: nowrap;
+  }
+  table.cmp tbody tr:last-child td { border-bottom: 0; }
+  table.cmp td.node { font-weight: 600; word-break: break-all; min-width: 150px; }
+  table.cmp td .sub { display: block; font-weight: 400; }
+  table.cmp td.na { color: var(--muted); font-style: italic; }
+  tr.common td { border-left: 3px solid var(--accent); }
+  tr.added td { border-left: 3px solid var(--ok); background: rgba(52, 211, 153, 0.06); }
+  tr.missing td { border-left: 3px solid var(--error); background: rgba(248, 113, 113, 0.06); }
+  .tag {
+    display: inline-block; border-radius: 999px; padding: 1px 10px;
+    font-size: 12px; font-weight: 700; white-space: nowrap;
+  }
+  .tag.common { background: var(--accent); color: #082f49; }
+  .tag.added { background: var(--ok); color: #052e1b; }
+  .tag.missing { background: var(--error); color: #450a0a; }
+  .diff-ok { color: var(--ok); font-weight: 700; }
+  .diff-na { color: var(--muted); }
+  .time-bad { color: var(--error); }
 </style>
 </head>
 <body>
@@ -136,19 +174,110 @@
   <h1>📮 邮件投递路径检查器</h1>
   <p class="subtitle">
     粘贴邮件原始头部（含 <code>Received</code> 字段），自动展开折行、按实际投递顺序排列中继节点并计算相邻节点耗时。
-    顺序自上而下为：发件方 → 收件方。
+    顺序自上而下为：发件方 → 收件方。在 A、B 两侧各粘贴一份头部，可对照两份邮件的投递路径差异。
   </p>
 
-  <form method="post" action="/analyze">
-    <textarea name="headers" id="headers"
-      placeholder="例如：&#10;Received: from mail.example.com ...&#10;    by mx.example.net; Tue, 23 Sep 2026 10:00:00 +0800">{{ raw_headers or '' }}</textarea>
+  <form method="post" action="/analyze" id="mainForm">
+    <label class="input-label" for="headers_a">头部 A（基准）</label>
+    <textarea name="headers_a" id="headers_a"
+      placeholder="例如：&#10;Received: from mail.example.com ...&#10;    by mx.example.net; Tue, 23 Sep 2026 10:00:00 +0800">{{ headers_a or '' }}</textarea>
+    <label class="input-label" for="headers_b">头部 B（对照，仅“路径对照”时使用）</label>
+    <textarea name="headers_b" id="headers_b"
+      placeholder="粘贴另一份邮件原始头部，与 A 对照新增 / 缺失 / 共有的中继节点">{{ headers_b or '' }}</textarea>
     <div class="toolbar">
-      <button class="btn-primary" type="submit">分析投递路径</button>
+      <button class="btn-primary" type="submit">分析投递路径（A）</button>
+      <button class="btn-compare" type="submit" formaction="/compare">对照 A / B 路径</button>
       <button class="btn-ghost" type="button" id="fillSample">填入示例</button>
       <button class="btn-ghost" type="button" id="clearInput">清空</button>
-      <span class="hint" style="align-self:center;">输入上限 {{ max_input_kb }} KB（MAX_INPUT_KB）</span>
+      <span class="hint" style="align-self:center;">单侧输入上限 {{ max_input_kb }} KB（MAX_INPUT_KB）</span>
     </div>
   </form>
+
+  {% if compare %}
+    {% if compare.error %}
+      <div class="banner">{{ compare.error }}</div>
+    {% else %}
+      <h2 style="font-size:18px;">路径对照结果（A 为基准，B 为对照）</h2>
+      <div class="stats">
+        <div class="stat"><div class="num">{{ compare.a.hop_count }}</div><div class="label">A 侧中继节点</div></div>
+        <div class="stat"><div class="num">{{ compare.b.hop_count }}</div><div class="label">B 侧中继节点</div></div>
+        <div class="stat"><div class="num">{{ compare.alignment.common_count }}</div><div class="label">共有节点</div></div>
+        <div class="stat"><div class="num ok">{{ compare.alignment.added_count }}</div><div class="label">新增（仅 B）</div></div>
+        <div class="stat"><div class="num error">{{ compare.alignment.missing_count }}</div><div class="label">缺失（仅 A）</div></div>
+      </div>
+
+      <div class="cmp-wrap">
+      <table class="cmp">
+        <thead>
+          <tr>
+            <th>状态</th>
+            <th>A 侧节点</th>
+            <th>A 时间（UTC）</th>
+            <th>A 相邻耗时</th>
+            <th>B 侧节点</th>
+            <th>B 时间（UTC）</th>
+            <th>B 相邻耗时</th>
+            <th>耗时差值（B−A）</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in compare.alignment.rows %}
+          <tr class="{{ row.kind }}">
+            <td>
+              {% if row.kind == 'common' %}<span class="tag common">共有</span>
+              {% elif row.kind == 'added' %}<span class="tag added">新增</span>
+              {% else %}<span class="tag missing">缺失</span>{% endif %}
+            </td>
+            {% if row.kind == 'added' %}
+              <td class="na" colspan="3">A 侧无对应节点</td>
+              <td class="node">{{ row.b.node }}
+                {% if row.b.ip %}<span class="sub hint">对端 IP：{{ row.b.ip }}</span>{% endif %}
+                {% if row.b.anomalies %}<span class="sub hint">⚠ {{ row.b.anomalies | length }} 条异常/告警</span>{% endif %}
+              </td>
+              <td>{% if row.b.time_utc %}{{ row.b.time_utc }}{% else %}<span class="time-bad">无效 / 缺失</span>{% endif %}</td>
+              <td>{% if row.b.delay_human %}{{ row.b.delay_human }}{% elif row.b.path_index == 1 %}<span class="hint">首跳</span>{% else %}<span class="hint">不可计算</span>{% endif %}</td>
+              <td class="diff-na">—</td>
+            {% elif row.kind == 'missing' %}
+              <td class="node">{{ row.a.node }}
+                {% if row.a.ip %}<span class="sub hint">对端 IP：{{ row.a.ip }}</span>{% endif %}
+                {% if row.a.anomalies %}<span class="sub hint">⚠ {{ row.a.anomalies | length }} 条异常/告警</span>{% endif %}
+              </td>
+              <td>{% if row.a.time_utc %}{{ row.a.time_utc }}{% else %}<span class="time-bad">无效 / 缺失</span>{% endif %}</td>
+              <td>{% if row.a.delay_human %}{{ row.a.delay_human }}{% elif row.a.path_index == 1 %}<span class="hint">首跳</span>{% else %}<span class="hint">不可计算</span>{% endif %}</td>
+              <td class="na" colspan="3">B 侧无对应节点</td>
+              <td class="diff-na">—</td>
+            {% else %}
+              <td class="node">{{ row.a.node }}
+                {% if row.a.ip %}<span class="sub hint">对端 IP：{{ row.a.ip }}</span>{% endif %}
+                {% if row.a.anomalies %}<span class="sub hint">⚠ {{ row.a.anomalies | length }} 条异常/告警</span>{% endif %}
+              </td>
+              <td>{% if row.a.time_utc %}{{ row.a.time_utc }}{% else %}<span class="time-bad">无效 / 缺失</span>{% endif %}</td>
+              <td>{% if row.delay_a_human %}{{ row.delay_a_human }}{% elif row.a.path_index == 1 %}<span class="hint">首跳</span>{% else %}<span class="hint">不可计算</span>{% endif %}</td>
+              <td class="node">{{ row.b.node }}
+                {% if row.b.ip %}<span class="sub hint">对端 IP：{{ row.b.ip }}</span>{% endif %}
+                {% if row.b.anomalies %}<span class="sub hint">⚠ {{ row.b.anomalies | length }} 条异常/告警</span>{% endif %}
+              </td>
+              <td>{% if row.b.time_utc %}{{ row.b.time_utc }}{% else %}<span class="time-bad">无效 / 缺失</span>{% endif %}</td>
+              <td>{% if row.delay_b_human %}{{ row.delay_b_human }}{% elif row.b.path_index == 1 %}<span class="hint">首跳</span>{% else %}<span class="hint">不可计算</span>{% endif %}</td>
+              <td>
+                {% if row.diff_status == 'ok' %}<span class="diff-ok">{{ row.delay_diff_human }}</span>
+                {% elif row.diff_status == 'first_hop' %}<span class="diff-na">—（均为首跳）</span>
+                {% else %}<span class="diff-na">不可比较</span>{% endif %}
+              </td>
+            {% endif %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      <p class="legend">
+        对照说明：节点按投递结构顺序做保序全局对齐；匹配依据为 <code>by</code> 主机与对端 IP
+        （任一冲突即视为不同节点，两者都缺失的节点不参与匹配，不会仅凭时间相近配对）。
+        耗时为各自路径内到上一相邻节点的耗时；任一侧时间无效时差值显示“不可比较”，
+        不会跳过中间节点拼接耗时。
+      </p>
+    {% endif %}
+  {% endif %}
 
   {% if result %}
     {% if result.error %}
@@ -235,13 +364,16 @@
 </div>
 
 <script>
-  const ta = document.getElementById('headers');
+  const taA = document.getElementById('headers_a');
+  const taB = document.getElementById('headers_b');
   document.getElementById('fillSample').addEventListener('click', () => {
-    ta.value = {{ sample | tojson }};
+    taA.value = {{ sample | tojson }};
+    taB.value = {{ sample_b | tojson }};
   });
   document.getElementById('clearInput').addEventListener('click', () => {
-    ta.value = '';
-    ta.focus();
+    taA.value = '';
+    taB.value = '';
+    taA.focus();
   });
 </script>
 </body>

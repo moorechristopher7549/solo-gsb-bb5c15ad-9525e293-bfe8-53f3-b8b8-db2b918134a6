@@ -9,7 +9,10 @@
 - **无法解析的时间标记为异常，但保留原始字段**（可展开查看）；
 - **缺少时间的节点仍然列出**，不会被丢弃；
 - 识别时钟偏移/时间倒灌（上一节点时间晚于本节点）并告警；
-- 提取 `from` / `by` / `via` / `with` / `id` 与对端 IPv4/IPv6 地址。
+- 提取 `from` / `by` / `via` / `with` / `id` 与对端 IPv4/IPv6 地址；
+- **双邮件头路径对照**：分别粘贴两份头部，复用同一套 Received 解析结果，
+  按投递结构顺序对中继节点做**保序全局对齐**，并列展示**共有 / 新增（仅 B）/ 缺失（仅 A）**节点；
+  共有节点展示两份各自的相邻耗时与差值（B−A），任一侧时间无效时明确显示“不可比较”。
 
 解析核心（`mailtrace/`）仅依赖 Python 标准库，可脱离 Flask 单独使用或被其他程序导入。
 
@@ -49,19 +52,48 @@ docker build -t mailtrace . && docker run --rm -p 8000:8000 mailtrace
 ## 使用方法
 
 1. 打开 `http://localhost:8000`；
-2. 把邮件的**原始头部**（Gmail 的“显示原始邮件”、Outlook 的“查看邮件来源”等）完整粘贴到文本框
-   （也可以点“填入示例”）；
-3. 点击 **分析投递路径**。
+2. 把邮件的**原始头部**（Gmail 的“显示原始邮件”、Outlook 的“查看邮件来源”等）完整粘贴到
+   **头部 A** 文本框（也可以点“填入示例”，会同时填入 A、B 两份示例）；
+3. 点击 **分析投递路径（A）** 查看单份头部的投递时间线；
+4. 或在 **头部 B** 中粘贴另一份头部，点击 **对照 A / B 路径** 查看双邮件头对照结果。
 
-页面以时间线形式展示每个中继节点：节点名称、UTC 时间、from/by/协议、对端 IP、
+单份分析页面以时间线形式展示每个中继节点：节点名称、UTC 时间、from/by/协议、对端 IP、
 距上一节点耗时、异常/告警，以及可展开的**原始 `Received` 文本（保留折行）**。
+
+对照结果以表格并列展示（行顺序为投递顺序：发件方 → 收件方）：
+
+- **共有**：两侧身份一致的节点（匹配依据为 `by` 主机与对端 IP，任一冲突即视为不同节点；
+  同名节点重复出现时按结构顺序保序全局对齐，而非首次命中；
+  `by` 与对端 IP 都缺失的节点没有身份，不会仅凭时间相近配对）；
+- **新增**：仅出现在 B 侧的节点；**缺失**：仅出现在 A 侧的节点；
+- 共有节点展示 A、B 各自到上一相邻节点的耗时及差值（B−A）；
+  任一侧时间无效时显示“不可比较”，不会跳过中间无效节点拼接耗时。
 
 也提供 JSON 接口，便于脚本调用：
 
 ```bash
+# 单份头部分析
 curl -s -X POST http://localhost:8000/api/analyze \
   -H 'Content-Type: application/json' \
   -d '{"headers": "Received: by mx.example; Tue, 23 Sep 2026 10:00:00 +0800"}'
+
+# 双邮件头路径对照
+curl -s -X POST http://localhost:8000/api/compare \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "headers_a": "Received: by mx.example; Tue, 23 Sep 2026 10:00:00 +0800",
+        "headers_b": "Received: by mx.example; Tue, 23 Sep 2026 10:00:05 +0800"
+      }'
+```
+
+`/api/compare` 返回 `alignment.rows`（每行 `kind` 为 `common` / `added` / `missing`）
+及 `common_count` / `added_count` / `missing_count` 统计；共有行内含
+`delay_a_seconds`、`delay_b_seconds`、`delay_diff_seconds` 与可读形式。
+任一侧没有 `Received` 字段时返回 400 及明确错误，例如：
+
+```json
+{"error": "B 侧头部中未找到 Received 字段，无法进行路径对照",
+ "side_errors": {"b": "B 侧头部中未找到 Received 字段"}}
 ```
 
 健康检查：`GET http://localhost:8000/healthz`。
@@ -134,18 +166,21 @@ python -m unittest discover -s tests -v
 ```
 .
 ├── app/                    # Flask 应用（路由、模板）
-│   ├── __init__.py         # create_app()：页面 + JSON API + 健康检查
+│   ├── __init__.py         # create_app()：页面 + 对照 + JSON API + 健康检查
 │   └── templates/index.html
 ├── mailtrace/              # 纯标准库解析核心（可独立复用）
 │   └── parsing/
 │       ├── parser.py       # 折行展开、时间解析、路径排序、耗时与异常
-│       └── sample.py       # 页面“填入示例”数据
+│       ├── compare.py      # 双邮件头对照：保序全局对齐、耗时差值
+│       └── sample.py       # 页面“填入示例”数据（A / B 两份）
 ├── wsgi.py                 # gunicorn / flask 启动入口
 ├── entrypoint.sh           # 容器启动时安装依赖并启动 gunicorn
 ├── Dockerfile
 ├── docker-compose.yml
 ├── requirements.txt
-└── tests/test_parser.py    # 解析核心单元测试
+└── tests/                  # 解析核心与对照单元测试
+    ├── test_parser.py
+    └── test_compare.py
 ```
 
 ## 安全与隐私
